@@ -2,10 +2,10 @@
 
 ###############################################################################
 # archivesys -
-# A simple backup script using rsync to copy data to destination file path 
+# A simple backup script using rsync to copy data to destination file path
 # 1 full & 3 incremental backups are created.
 
-LOGFILE="/var/log/backuplog.txt"
+LOGFILE="/var/log/archivesys.txt"
 REVROOT="/var/log/archivesys"
 function message {
     echo -e $1
@@ -31,7 +31,7 @@ function usage {
     echo -e "   remote- e.g. rsync://<rsynchost>/<backup-project>"
 }
 
-if [ $# -lt 2 ] || [ $# -gt 8 ]; then
+if [[ $# -lt 2 ]] || [[ $# -gt 8 ]]; then
    echo "Incorrect argument count $#"
    usage
    exit 1
@@ -52,9 +52,9 @@ BCKCMD="rsync -aXh --mkpath --sparse --delete --info=progress2"
 
 # Tie our stdout/stderr to our log file as well
 NPIPE="/tmp/$$.tmp"
-trap "rm -f $NPIPE" EXIT
+trap "sudo rm -f $NPIPE" EXIT
 mknod $NPIPE p
-tee <$NPIPE log &
+sudo tee -a <$NPIPE $LOGFILE &
 exec 1>&-
 exec 1>$NPIPE
 
@@ -85,99 +85,107 @@ done
 shift "$((OPTIND-1))"
 
 # Generate a backup set name, if none was given
-if [ -z ${BAKNAME} ]; then
+if [[ -z ${BAKNAME} ]]; then
    BAKNAME=$(head -c 32 /dev/urandom | sha256sum -b --tag -z | cut -d " " -f 4)
-   echo "Backup set name \"${BAKNAME}\" auto-generated"
+   echo "INFO - Backup set name \"${BAKNAME}\" auto-generated"
 fi
 
 REVDIR="${REVROOT}/${BAKNAME}"
 REVFILE="${REVDIR}/revisions.txt"
 
 BAKDEST=$1
-if [ -z $BAKDEST ]; then
-   echo "!!! No backup destinatin provided; aborting"
+if [[ -z $BAKDEST ]]; then
+   echo "ERROR - No backup destinatin provided; aborting"
    exit 1
 fi
 
+echo ""
 echo "*************************************************************************"
 echo "archivesys - $HOSTNAME ${DATETIME}"
 echo "*************************************************************************"
 
-echo "==> Verifying rsync"
-if [ ! which rsync > /dev/null 2>&1 ]; then
-   echo "!!! Could not locate rsync utility; aborting"
+echo "INFO - Verifying rsync"
+if ! which rsync > /dev/null 2>&1; then
+   echo "ERROR - Could not locate rsync utility; aborting"
    exit 1
 fi
 
-echo "==> Verifying archive revision metadata"
-if [ ! -d ${REVDIR} ]; then
-   echo "Archive revision directory not found; creating at ${REVDIR}"
-   if [ ! sudo mkdir -p ${REVDIR} ]; then
-      echo "!!! Could not create revision directory; aborting"
+echo "INFO - Verifying archive revision metadata"
+if [[ ! -d ${REVDIR} ]]; then
+   echo "INFO - Archive revision directory not found; creating at ${REVDIR}"
+   if ! sudo mkdir -p ${REVDIR}; then
+      echo "ERROR - Could not create revision directory; aborting"
       exit 1
    fi
-   if [ ! sudo touch ${REVFILE} ]; then
-      echo "!!! Could not create revision metadata file; aborting"
-      exit 1
-   fi
-fi
-
-echo "==> Verifying paths"
-if [ ! -d ${BAKSOURCE} ]; then
-   echo "!!! Could not locate backup source path '${BAKSOURCE}'; aborting"
-   exit 1
-fi
-
-if [ ! grep -q "rsync://.*" ${BAKDEST} ]; then
-   if [ ! -d ${BAKDEST} ]; then
-      echo "!!! Could not locate backup destination path '${BAKDEST}'; aborting"
+   if ! sudo touch ${REVFILE}; then
+      echo "ERROR - Could not create revision metadata file; aborting"
       exit 1
    fi
 fi
 
-if [ -n ${EXCFILE} ] && [ ! -f ${EXCFILE} ]; then
-   echo "!!! Could not locate exclusions file path '${EXCFILE}'; aborting"
+echo "INFO - Verifying paths"
+if [[ ! -d ${BAKSOURCE} ]]; then
+   echo "ERROR - Could not locate backup source path '${BAKSOURCE}'; aborting"
    exit 1
 fi
 
-echo "==> Beginning backup process at $(date)"
+if ! echo ${BAKDEST} | grep -q "rsync://.*"; then
+   if [[ ! -d ${BAKDEST} ]]; then
+      echo "ERROR - Could not locate backup destination path '${BAKDEST}'; aborting"
+      exit 1
+   fi
+fi
+
+if [[ -n ${EXCFILE} ]] && [[ ! -f ${EXCFILE} ]]; then
+   echo "ERROR - Could not locate exclusions file path '${EXCFILE}'; aborting"
+   exit 1
+fi
+
+echo "INFO - Beginning backup process at $(date)"
 
 REVISION=${DATETIME}
-if [ ${DOFULL} -eq 1 ]; then
-   echo "User requested full backup"
+if [[ ${DOFULL} -eq 1 ]]; then
+   echo "INFO - User requested full backup"
    REVISION="${REVISION}_full"
 else
-   echo "Attempting differential backup"
-   echo "Locating most recent snapshot"
-   if [ ! -f $REVFILE ]; then
-      echo "!!! Could not locate revision metadata at \"${REVFILE}\"; aborting"
+   echo "INFO - Attempting differential backup"
+   echo "INFO - Locating most recent snapshot"
+   if [[ ! -f $REVFILE ]]; then
+      echo "ERROR - Could not locate revision metadata at \"${REVFILE}\"; aborting"
       exit 1
    fi
    LASTBK=$(tail -n 1 $REVFILE)
-   echo "Last known revision -> ${LASTBK}" 
-   BAKROOTLNK="--link-dest=${BAKNAME}/${LASTBAK}"
+   echo "INFO - Last known revision -> ${LASTBK}"
+   BAKROOTLNK="--link-dest=/${BAKNAME}/${LASTBK}/"
 fi
 BAKDEST="${BAKDEST}/${BAKNAME}/${REVISION}"
 
 # Set the exclusions file option
-if [ -n $EXCFILE ]; then
+if [[ -n $EXCFILE ]]; then
     EXCFILE="--exclude-from=${EXCFILE}"
 fi
 
 # Perform the actual backup
-echo "==> Backing up from path \"$BAKSOURCE\" to \"$BAKDEST\""
+echo "INFO - Backing up from path \"$BAKSOURCE\" to \"$BAKDEST\""
+echo "INFO - running \"$BCKCMD $DOCOMPRESS $EXCFILE $BAKROOTLNK $BAKSOURCE $BAKDEST\""
 $BCKCMD $DOCOMPRESS $EXCFILE $BAKROOTLNK $BAKSOURCE $BAKDEST
 BAKSTATUS=$?
 
 # Check status and finish
-echo "==> Backup process complete at $(date)"
-if [ $BAKSTATUS -ne 0 ]; then
-   echo "!!! Backup process failed (see logs)"
-   exit 1
+echo "INFO - Backup process complete at $(date)"
+if [[ $BAKSTATUS -ne 0 ]]; then
+   if [[ $BAKSTATUS -eq 23 ]]; then
+      echo "WARN - Backup process completed, but skipped files with bad permissions (see logs)"
+   elif [[ $BAKSTATUS -eq 24 ]]; then
+      echo "WARN - Backup process completed, but skipped files that vanished from source location (see logs)"
+   else
+      echo "ERROR - Backup process failed (see logs)"
+      exit 1
+   fi
 fi
 
-echo "==> Writing archive revision"
-echo ${REVISION} >> ${REVFILE} 
+echo "INFO - Writing archive revision"
+sudo bash -c "echo ${REVISION} >> ${REVFILE}"
 
-echo "==> Backup process successful"
+echo "INFO - Backup process successful"
 exit 0
