@@ -1,0 +1,12 @@
+.cache/
+mnt/
+dev/
+media/
+proc/
+run/
+sys/
+tmp/
+var/run/
+var/lock/
+VMs/images/
+OSX-KVM/

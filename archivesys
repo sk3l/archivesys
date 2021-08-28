@@ -1,0 +1,183 @@
+#!/bin/bash
+
+###############################################################################
+# archivesys -
+# A simple backup script using rsync to copy data to destination file path 
+# 1 full & 3 incremental backups are created.
+
+LOGFILE="/var/log/backuplog.txt"
+REVROOT="/var/log/archivesys"
+function message {
+    echo -e $1
+    echo -e $1 >> $LOGFILE
+}
+
+function usage {
+	echo -e "\narchivesys - backup tool\n"
+    echo -e "\tFull/differential backups via rsync"
+	echo -e "\nUsage:\n"
+	echo -e "    archivesys [-h] [-c] [-e exclpath] [-f] [-n name] [-r] [-s source] <dest>"
+	echo -e "\nWhere:"
+    echo -e "   -h          = show this usage"
+    echo -e "   -c          = utilize compression (default=no compression)"
+    echo -e "   -e exclpath = path to exclusions file(default=no exclusions)"
+    echo -e "   -f          = do full backup (default=partial if existing full found)"
+    echo -e "   -n name     = name of the backup set (default=random 256-bit hash"
+    echo -e "   source      = source file system location to archive (default=/)"
+    echo -e "   dest        = target location to write archive"
+    echo -e ""
+    echo -e "Note that dest can be one of:"
+    echo -e "   local - e.g. /path/to/dest"
+    echo -e "   remote- e.g. rsync://<rsynchost>/<backup-project>"
+}
+
+if [ $# -lt 2 ] || [ $# -gt 8 ]; then
+   echo "Incorrect argument count $#"
+   usage
+   exit 1
+fi
+
+###############################################################################
+# Variables
+DATETIME=$(date -Iminute)
+BAKNAME=""
+BAKSOURCE="/"
+BAKROOTLNK=""                     # Differential link source (empty for full backup)
+DOFULL=0                          # Do full backup?
+DOCOMPRESS=""                     # Backup with compression?
+EXCFILE=""                        # Use exclusions file?
+
+# Use rsync utility for our arhival process
+BCKCMD="rsync -aXh --mkpath --sparse --delete --info=progress2"
+
+# Tie our stdout/stderr to our log file as well
+NPIPE="/tmp/$$.tmp"
+trap "rm -f $NPIPE" EXIT
+mknod $NPIPE p
+tee <$NPIPE log &
+exec 1>&-
+exec 1>$NPIPE
+
+# Parse cmd-line arguments
+while getopts "ce:fn:hs:" option; do
+    case "${option}" in
+    c)
+        DOCOMPRESS="--compress"
+        ;;
+    e)
+        EXCFILE=${OPTARG}
+        ;;
+    f)
+        DOFULL=1
+        ;;
+    n)
+        BAKNAME=${OPTARG}
+        ;;
+    s)
+        BAKSOURCE=${OPTARG}
+        ;;
+    h)
+        usage
+        exit 1
+        ;;
+    esac
+done
+shift "$((OPTIND-1))"
+
+# Generate a backup set name, if none was given
+if [ -z ${BAKNAME} ]; then
+   BAKNAME=$(head -c 32 /dev/urandom | sha256sum -b --tag -z | cut -d " " -f 4)
+   echo "Backup set name \"${BAKNAME}\" auto-generated"
+fi
+
+REVDIR="${REVROOT}/${BAKNAME}"
+REVFILE="${REVDIR}/revisions.txt"
+
+BAKDEST=$1
+if [ -z $BAKDEST ]; then
+   echo "!!! No backup destinatin provided; aborting"
+   exit 1
+fi
+
+echo "*************************************************************************"
+echo "archivesys - $HOSTNAME ${DATETIME}"
+echo "*************************************************************************"
+
+echo "==> Verifying rsync"
+if [ ! which rsync > /dev/null 2>&1 ]; then
+   echo "!!! Could not locate rsync utility; aborting"
+   exit 1
+fi
+
+echo "==> Verifying archive revision metadata"
+if [ ! -d ${REVDIR} ]; then
+   echo "Archive revision directory not found; creating at ${REVDIR}"
+   if [ ! sudo mkdir -p ${REVDIR} ]; then
+      echo "!!! Could not create revision directory; aborting"
+      exit 1
+   fi
+   if [ ! sudo touch ${REVFILE} ]; then
+      echo "!!! Could not create revision metadata file; aborting"
+      exit 1
+   fi
+fi
+
+echo "==> Verifying paths"
+if [ ! -d ${BAKSOURCE} ]; then
+   echo "!!! Could not locate backup source path '${BAKSOURCE}'; aborting"
+   exit 1
+fi
+
+if [ ! grep -q "rsync://.*" ${BAKDEST} ]; then
+   if [ ! -d ${BAKDEST} ]; then
+      echo "!!! Could not locate backup destination path '${BAKDEST}'; aborting"
+      exit 1
+   fi
+fi
+
+if [ -n ${EXCFILE} ] && [ ! -f ${EXCFILE} ]; then
+   echo "!!! Could not locate exclusions file path '${EXCFILE}'; aborting"
+   exit 1
+fi
+
+echo "==> Beginning backup process at $(date)"
+
+REVISION=${DATETIME}
+if [ ${DOFULL} -eq 1 ]; then
+   echo "User requested full backup"
+   REVISION="${REVISION}_full"
+else
+   echo "Attempting differential backup"
+   echo "Locating most recent snapshot"
+   if [ ! -f $REVFILE ]; then
+      echo "!!! Could not locate revision metadata at \"${REVFILE}\"; aborting"
+      exit 1
+   fi
+   LASTBK=$(tail -n 1 $REVFILE)
+   echo "Last known revision -> ${LASTBK}" 
+   BAKROOTLNK="--link-dest=${BAKNAME}/${LASTBAK}"
+fi
+BAKDEST="${BAKDEST}/${BAKNAME}/${REVISION}"
+
+# Set the exclusions file option
+if [ -n $EXCFILE ]; then
+    EXCFILE="--exclude-from=${EXCFILE}"
+fi
+
+# Perform the actual backup
+echo "==> Backing up from path \"$BAKSOURCE\" to \"$BAKDEST\""
+$BCKCMD $DOCOMPRESS $EXCFILE $BAKROOTLNK $BAKSOURCE $BAKDEST
+BAKSTATUS=$?
+
+# Check status and finish
+echo "==> Backup process complete at $(date)"
+if [ $BAKSTATUS -ne 0 ]; then
+   echo "!!! Backup process failed (see logs)"
+   exit 1
+fi
+
+echo "==> Writing archive revision"
+echo ${REVISION} >> ${REVFILE} 
+
+echo "==> Backup process successful"
+exit 0
